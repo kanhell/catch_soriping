@@ -1,0 +1,23 @@
+# Firebase 서비스 계정 키 (절대 올리면 안 됨 - 비공개 인증 정보)
+*firebase-adminsdk*.json
+
+# 녹음 파일 (용량 크고 개인정보성 오디오)
+recordings/
+
+# 로그 파일
+logs/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 가상환경
+venv/
+.venv/
+
+# OS 관련
+.DS_Store
+Thumbs.db
+
+# VS Code 설정 (개인 환경설정, 필요시 이 줄은 지워도 됨)
+.vscode/
