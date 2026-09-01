@@ -209,7 +209,7 @@ class MainPage(tk.Frame):
             return
 
         for doc in docs:
-            data = doc.data()
+            data = doc.to_dict()
             self._add_row(data)
 
     def _add_row(self, data):
@@ -463,7 +463,6 @@ class SettingsPage(tk.Frame):
         dialog.geometry("380x160")
         dialog.configure(bg="white")
         dialog.transient(self)
-        dialog.grab_set()
 
         color = "#2563eb" if ok else "#ff3b30"
         title = "연결 성공" if ok else "연결 실패"
@@ -471,6 +470,9 @@ class SettingsPage(tk.Frame):
         tk.Label(dialog, text=title, bg="white", fg=color, font=(FONT_FAMILY, 16, "bold")).pack(pady=(24, 8))
         tk.Label(dialog, text=msg, bg="white", fg="#111318", font=(FONT_FAMILY, 12), wraplength=320).pack(pady=(0, 16))
         tk.Button(dialog, text="확인", command=dialog.destroy, relief="flat", bg="#e5e7eb", padx=20, pady=6).pack()
+
+        dialog.update_idletasks()
+        dialog.grab_set()
 
         if ok:
             self.refresh_status()
