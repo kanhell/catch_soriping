@@ -175,10 +175,18 @@ class MainPage(tk.Frame):
 
     def _start_listener(self):
         def on_snapshot(col_snapshot, changes, read_time):
+            logger.info(f"방송 목록 갱신: {len(col_snapshot)}건")
             self.queue.put(list(col_snapshot))
 
-        query = db.collection("announcements").order_by("timestamp", direction=firestore.Query.DESCENDING)
-        self.watch = query.on_snapshot(on_snapshot)
+        def on_error(error):
+            logger.error(f"방송 목록 리스너 오류: {error}")
+
+        try:
+            query = db.collection("announcements").order_by("timestamp", direction=firestore.Query.DESCENDING)
+            self.watch = query.on_snapshot(on_snapshot)
+            logger.info("방송 목록 리스너 등록 완료. 응답 대기 중...")
+        except Exception as e:
+            logger.error(f"방송 목록 리스너 등록 실패: {e}")
 
     def _poll_queue(self):
         try:
@@ -216,10 +224,19 @@ class MainPage(tk.Frame):
         left = tk.Frame(top, bg="white")
         left.pack(side="left", fill="x", expand=True)
 
+        title_row = tk.Frame(left, bg="white")
+        title_row.pack(anchor="w", fill="x")
+
+        is_read = data.get("isRead", True)
+        if not is_read:
+            dot = tk.Canvas(title_row, width=10, height=10, bg="white", highlightthickness=0)
+            dot.create_oval(1, 1, 9, 9, fill="#ff3b30", outline="")
+            dot.pack(side="left", padx=(0, 8), pady=(4, 0))
+
         tk.Label(
-            left, text=data.get("title", "[안내]"), bg="white", fg=color,
+            title_row, text=data.get("title", "[안내]"), bg="white", fg=color,
             font=(FONT_FAMILY, 16, "bold"), anchor="w",
-        ).pack(anchor="w")
+        ).pack(side="left")
 
         ts = data.get("timestamp")
         date_str = ts.strftime("%m/%d %H:%M") if ts else ""
@@ -258,10 +275,14 @@ class MainPage(tk.Frame):
                 chevron.config(text="▾")
 
         top.bind("<Button-1>", toggle)
+
+        def bind_recursive(widget):
+            widget.bind("<Button-1>", toggle)
+            for child in widget.winfo_children():
+                bind_recursive(child)
+
         for child in top.winfo_children():
-            child.bind("<Button-1>", toggle)
-            for grandchild in child.winfo_children():
-                grandchild.bind("<Button-1>", toggle)
+            bind_recursive(child)
 
         self.rows.append(row)
 
@@ -361,6 +382,8 @@ class SettingsPage(tk.Frame):
                 elif kind == "connect_result":
                     ok, msg = payload
                     self._show_result(ok, msg)
+                elif kind == "close_dialog":
+                    payload.destroy()
         except queue.Empty:
             pass
         self.after(200, self._poll_queue)
@@ -396,7 +419,6 @@ class SettingsPage(tk.Frame):
         dialog.geometry("420x220")
         dialog.configure(bg="white")
         dialog.transient(self)
-        dialog.grab_set()
 
         tk.Label(dialog, text=ssid, bg="white", font=(FONT_FAMILY, 16, "bold")).pack(pady=(20, 6))
 
@@ -405,9 +427,8 @@ class SettingsPage(tk.Frame):
 
         if not is_open:
             tk.Label(dialog, text="비밀번호", bg="white", font=(FONT_FAMILY, 12)).pack(pady=(10, 4))
-            entry = tk.Entry(dialog, textvariable=pw_var, show="•", font=(FONT_FAMILY, 14), justify="center")
+            entry = tk.Entry(dialog, textvariable=pw_var, show="*", font=(FONT_FAMILY, 14), justify="center")
             entry.pack(ipady=6, padx=40, fill="x")
-            entry.focus()
 
         status_label = tk.Label(dialog, text="", bg="white", fg="#8b8f98", font=(FONT_FAMILY, 11))
         status_label.pack(pady=(10, 0))
@@ -419,7 +440,7 @@ class SettingsPage(tk.Frame):
             def worker():
                 ok, msg = connect_wifi(ssid, password)
                 self.queue.put(("connect_result", (ok, msg)))
-                dialog.after(0, dialog.destroy)
+                self.queue.put(("close_dialog", dialog))
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -428,6 +449,14 @@ class SettingsPage(tk.Frame):
             bg="#2563eb", fg="white", relief="flat", padx=20, pady=8,
             command=do_connect,
         ).pack(pady=16)
+
+        # 창이 화면에 실제로 그려진 뒤에 grab_set을 걸어야 함
+        # (위젯을 만들기 전에 호출하면 "window not viewable" 오류로 조용히 실패해
+        #  빈 다이얼로그만 뜨는 문제가 생김)
+        dialog.update_idletasks()
+        dialog.grab_set()
+        if not is_open:
+            entry.focus()
 
     def _show_result(self, ok, msg):
         dialog = tk.Toplevel(self)
