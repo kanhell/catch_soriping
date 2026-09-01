@@ -11,11 +11,11 @@ import recorder
 import led_notify
 from stt_function import STTEngine, CategoryClassifier, TitleGenerator, FirebaseUploader, process_and_upload
 from logger_setup import get_logger
+from config import FIREBASE_KEY_PATH
 
 logger = get_logger("main")
 
 # ===== 설정값 (환경에 맞게 조정, 자세한 설명은 README 참고) =====
-FIREBASE_KEY_PATH = "announcement-stt-firebase-adminsdk-fbsvc-3cc4355a9b.json"
 STT_MODEL_SIZE = "small"
 STT_DEVICE = "cpu"
 # ======================================
