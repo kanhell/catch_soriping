@@ -2,21 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 캐치 소리핑 - 모니터 UI (Tkinter)
-
-두 페이지로 구성:
-  1) MainPage     : Firestore의 announcements를 실시간으로 보여주는 방송 목록
-  2) SettingsPage : 와이파이 스캔/연결을 할 수 있는 기기 연결 설정 화면
-
-실행:
-    python3 kiosk_app.py
-
-사전 준비:
-    sudo apt install -y python3-tk
+사용법/자동 실행 설정은 README.md 참고.
 """
 
 import subprocess
 import threading
 import queue
+from datetime import datetime, timezone
 import tkinter as tk
 from tkinter import ttk
 
@@ -93,6 +85,73 @@ def scan_wifi_networks():
 
 
 # ============================================================
+# 화면 키보드 (터치용 - 와이파이 비밀번호 입력에 사용)
+# ============================================================
+
+class Keyboard(tk.Frame):
+    ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+    SYMBOLS = "-_.@!#*"
+
+    def __init__(self, parent, target_var):
+        super().__init__(parent, bg="#e5e7eb")
+        self.target_var = target_var
+        self.shift = False
+        self.key_buttons = []
+        self._build()
+
+    def _build(self):
+        for row in self.ROWS:
+            row_frame = tk.Frame(self, bg="#e5e7eb")
+            row_frame.pack(pady=2)
+            for ch in row:
+                btn = tk.Button(
+                    row_frame, text=ch, width=3, font=(FONT_FAMILY, 12),
+                    relief="flat", bg="white",
+                    command=lambda c=ch: self._press(c),
+                )
+                btn.pack(side="left", padx=2)
+                self.key_buttons.append(btn)
+
+        sym_frame = tk.Frame(self, bg="#e5e7eb")
+        sym_frame.pack(pady=2)
+        for ch in self.SYMBOLS:
+            tk.Button(
+                sym_frame, text=ch, width=3, font=(FONT_FAMILY, 12),
+                relief="flat", bg="white", command=lambda c=ch: self._press(c),
+            ).pack(side="left", padx=2)
+
+        bottom = tk.Frame(self, bg="#e5e7eb")
+        bottom.pack(pady=4)
+
+        tk.Button(
+            bottom, text="⇧ 대문자", width=8, font=(FONT_FAMILY, 12), relief="flat",
+            bg="white", command=self._toggle_shift,
+        ).pack(side="left", padx=2)
+        tk.Button(
+            bottom, text="space", width=16, font=(FONT_FAMILY, 12), relief="flat",
+            bg="white", command=lambda: self._press(" "),
+        ).pack(side="left", padx=2)
+        tk.Button(
+            bottom, text="⌫ 지우기", width=8, font=(FONT_FAMILY, 12), relief="flat",
+            bg="white", command=self._backspace,
+        ).pack(side="left", padx=2)
+
+    def _press(self, ch):
+        if self.shift:
+            ch = ch.upper()
+        self.target_var.set(self.target_var.get() + ch)
+
+    def _backspace(self):
+        self.target_var.set(self.target_var.get()[:-1])
+
+    def _toggle_shift(self):
+        self.shift = not self.shift
+        for btn in self.key_buttons:
+            c = btn["text"]
+            btn.config(text=c.upper() if self.shift else c.lower())
+
+
+# ============================================================
 # 메인 앱
 # ============================================================
 
@@ -102,7 +161,6 @@ class App(tk.Tk):
         self.title("아파트 실시간 방송")
         self.geometry("1024x600")
         self.configure(bg="white")
-        # 실제 모니터 배포 시 전체화면. 개발 중엔 아래 줄을 주석 처리해도 됨.
         self.attributes("-fullscreen", True)
         self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))
 
@@ -150,6 +208,12 @@ class MainPage(tk.Frame):
             command=lambda: controller.show_frame("SettingsPage"),
         ).pack(side="right", padx=20)
 
+        # 네트워크 미연결 안내 배너 (평소엔 숨김)
+        self.network_banner = tk.Label(
+            self, text="⚠ 네트워크에 연결해주세요", bg="#fff3cd", fg="#92400e",
+            font=(FONT_FAMILY, 13, "bold"), pady=10,
+        )
+
         # 스크롤 가능한 목록 영역
         list_container = tk.Frame(self, bg="white")
         list_container.pack(fill="both", expand=True)
@@ -172,14 +236,14 @@ class MainPage(tk.Frame):
 
         self._start_listener()
         self.after(300, self._poll_queue)
+        self._check_wifi_loop()
+
+    # --- Firestore 실시간 목록 ---
 
     def _start_listener(self):
         def on_snapshot(col_snapshot, changes, read_time):
             logger.info(f"방송 목록 갱신: {len(col_snapshot)}건")
-            self.queue.put(list(col_snapshot))
-
-        def on_error(error):
-            logger.error(f"방송 목록 리스너 오류: {error}")
+            self.queue.put(("docs", list(col_snapshot)))
 
         try:
             query = db.collection("announcements").order_by("timestamp", direction=firestore.Query.DESCENDING)
@@ -191,8 +255,11 @@ class MainPage(tk.Frame):
     def _poll_queue(self):
         try:
             while True:
-                docs = self.queue.get_nowait()
-                self._render(docs)
+                kind, payload = self.queue.get_nowait()
+                if kind == "docs":
+                    self._render(payload)
+                elif kind == "wifi_status":
+                    self._update_network_banner(payload)
         except queue.Empty:
             pass
         self.after(300, self._poll_queue)
@@ -208,12 +275,17 @@ class MainPage(tk.Frame):
             ).pack(pady=60)
             return
 
+        # 서버 정렬(DESCENDING)에 더해 클라이언트에서도 한 번 더 최신순 정렬 (안전장치)
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        docs = sorted(docs, key=lambda d: d.to_dict().get("timestamp") or epoch, reverse=True)
+
         for doc in docs:
             data = doc.to_dict()
-            self._add_row(data)
+            self._add_row(doc.id, data)
 
-    def _add_row(self, data):
+    def _add_row(self, doc_id, data):
         color = CATEGORY_COLOR.get(data.get("category"), CATEGORY_COLOR["general"])
+        is_read = data.get("isRead", True)
 
         row = tk.Frame(self.inner, bg="white")
         row.pack(fill="x")
@@ -227,11 +299,11 @@ class MainPage(tk.Frame):
         title_row = tk.Frame(left, bg="white")
         title_row.pack(anchor="w", fill="x")
 
-        is_read = data.get("isRead", True)
+        dot_widget = None
         if not is_read:
-            dot = tk.Canvas(title_row, width=10, height=10, bg="white", highlightthickness=0)
-            dot.create_oval(1, 1, 9, 9, fill="#ff3b30", outline="")
-            dot.pack(side="left", padx=(0, 8), pady=(4, 0))
+            dot_widget = tk.Canvas(title_row, width=10, height=10, bg="white", highlightthickness=0)
+            dot_widget.create_oval(1, 1, 9, 9, fill="#ff3b30", outline="")
+            dot_widget.pack(side="left", padx=(0, 8), pady=(4, 0))
 
         tk.Label(
             title_row, text=data.get("title", "[안내]"), bg="white", fg=color,
@@ -258,33 +330,106 @@ class MainPage(tk.Frame):
 
         tk.Label(
             body, text=full_ts, bg="white", fg="#8b8f98", font=(FONT_FAMILY, 10), anchor="w"
-        ).pack(anchor="w", padx=28, pady=(0, 18))
+        ).pack(anchor="w", padx=28, pady=(0, 8))
+
+        delete_btn = tk.Label(
+            body, text="🗑  삭제", bg="white", fg="#ff3b30", font=(FONT_FAMILY, 12, "bold"), cursor="hand2"
+        )
+        delete_btn.pack(anchor="e", padx=28, pady=(0, 18))
+        delete_btn.bind("<Button-1>", lambda e: self._confirm_delete(doc_id, data.get("title", "이 방송")))
 
         divider = tk.Frame(row, bg="#e2e4e8", height=1)
         divider.pack(fill="x")
 
-        state = {"open": False}
+        state = {"open": False, "read_marked": False}
 
         def toggle(event=None):
             state["open"] = not state["open"]
             if state["open"]:
                 body.pack(fill="x")
                 chevron.config(text="▴")
+                if not is_read and not state["read_marked"]:
+                    state["read_marked"] = True
+                    if dot_widget:
+                        dot_widget.destroy()
+                    threading.Thread(target=lambda: self._mark_read(doc_id), daemon=True).start()
             else:
                 body.pack_forget()
                 chevron.config(text="▾")
-
-        top.bind("<Button-1>", toggle)
 
         def bind_recursive(widget):
             widget.bind("<Button-1>", toggle)
             for child in widget.winfo_children():
                 bind_recursive(child)
 
+        top.bind("<Button-1>", toggle)
         for child in top.winfo_children():
             bind_recursive(child)
 
         self.rows.append(row)
+
+    # --- 읽음 처리 ---
+
+    def _mark_read(self, doc_id):
+        try:
+            db.collection("announcements").document(doc_id).update({"isRead": True})
+            logger.info(f"읽음 처리됨 (id={doc_id})")
+        except Exception as e:
+            logger.error(f"읽음 처리 실패 (id={doc_id}): {e}")
+
+    # --- 삭제 ---
+
+    def _confirm_delete(self, doc_id, title):
+        dialog = tk.Toplevel(self)
+        dialog.title("삭제 확인")
+        dialog.geometry("360x180")
+        dialog.configure(bg="white")
+        dialog.transient(self)
+
+        tk.Label(dialog, text="이 방송을 삭제할까요?", bg="white", font=(FONT_FAMILY, 15, "bold")).pack(pady=(28, 6))
+        tk.Label(dialog, text=title, bg="white", fg="#8b8f98", font=(FONT_FAMILY, 11), wraplength=300).pack()
+
+        btn_row = tk.Frame(dialog, bg="white")
+        btn_row.pack(pady=20)
+
+        def do_delete():
+            threading.Thread(target=lambda: self._delete_doc(doc_id), daemon=True).start()
+            dialog.destroy()
+
+        tk.Button(
+            btn_row, text="취소", font=(FONT_FAMILY, 12), bg="#e5e7eb", relief="flat",
+            padx=16, pady=6, command=dialog.destroy,
+        ).pack(side="left", padx=8)
+        tk.Button(
+            btn_row, text="삭제", font=(FONT_FAMILY, 12, "bold"), bg="#ff3b30", fg="white",
+            relief="flat", padx=16, pady=6, command=do_delete,
+        ).pack(side="left", padx=8)
+
+        dialog.update_idletasks()
+        dialog.grab_set()
+
+    def _delete_doc(self, doc_id):
+        try:
+            db.collection("announcements").document(doc_id).delete()
+            logger.info(f"방송 삭제됨 (id={doc_id})")
+        except Exception as e:
+            logger.error(f"방송 삭제 실패 (id={doc_id}): {e}")
+
+    # --- 네트워크 상태 배너 ---
+
+    def _check_wifi_loop(self):
+        def worker():
+            connected = get_current_ssid() is not None
+            self.queue.put(("wifi_status", connected))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(5000, self._check_wifi_loop)
+
+    def _update_network_banner(self, connected):
+        if connected:
+            self.network_banner.pack_forget()
+        else:
+            self.network_banner.pack(fill="x", after=self.winfo_children()[0])
 
 
 # ============================================================
@@ -312,7 +457,6 @@ class SettingsPage(tk.Frame):
             font=(FONT_FAMILY, 22, "bold"), fg="#111318",
         ).pack(side="left", padx=8)
 
-        # 현재 연결 상태
         status_frame = tk.Frame(self, bg="white")
         status_frame.pack(fill="x", padx=28, pady=(22, 10))
 
@@ -323,7 +467,6 @@ class SettingsPage(tk.Frame):
             font=(FONT_FAMILY, 16, "bold"), anchor="w",
         ).pack(anchor="w", pady=(2, 0))
 
-        # 네트워크 목록 헤더
         list_header = tk.Frame(self, bg="white")
         list_header.pack(fill="x", padx=28, pady=(16, 6))
 
@@ -334,7 +477,6 @@ class SettingsPage(tk.Frame):
             command=self.refresh_networks,
         ).pack(side="right")
 
-        # 스크롤 가능한 네트워크 목록
         list_container = tk.Frame(self, bg="white")
         list_container.pack(fill="both", expand=True, padx=28, pady=(0, 10))
 
@@ -416,19 +558,21 @@ class SettingsPage(tk.Frame):
     def _open_password_dialog(self, ssid, security):
         dialog = tk.Toplevel(self)
         dialog.title(f"{ssid} 연결")
-        dialog.geometry("420x220")
+        dialog.geometry("460x460")
         dialog.configure(bg="white")
         dialog.transient(self)
 
-        tk.Label(dialog, text=ssid, bg="white", font=(FONT_FAMILY, 16, "bold")).pack(pady=(20, 6))
+        tk.Label(dialog, text=ssid, bg="white", font=(FONT_FAMILY, 16, "bold")).pack(pady=(16, 6))
 
         is_open = security in ("", "오픈", "--")
         pw_var = tk.StringVar()
 
         if not is_open:
-            tk.Label(dialog, text="비밀번호", bg="white", font=(FONT_FAMILY, 12)).pack(pady=(10, 4))
+            tk.Label(dialog, text="비밀번호", bg="white", font=(FONT_FAMILY, 12)).pack(pady=(6, 4))
             entry = tk.Entry(dialog, textvariable=pw_var, show="*", font=(FONT_FAMILY, 14), justify="center")
             entry.pack(ipady=6, padx=40, fill="x")
+
+            Keyboard(dialog, pw_var).pack(pady=(12, 0))
 
         status_label = tk.Label(dialog, text="", bg="white", fg="#8b8f98", font=(FONT_FAMILY, 11))
         status_label.pack(pady=(10, 0))
@@ -448,11 +592,8 @@ class SettingsPage(tk.Frame):
             dialog, text="연결", font=(FONT_FAMILY, 13, "bold"),
             bg="#2563eb", fg="white", relief="flat", padx=20, pady=8,
             command=do_connect,
-        ).pack(pady=16)
+        ).pack(pady=10)
 
-        # 창이 화면에 실제로 그려진 뒤에 grab_set을 걸어야 함
-        # (위젯을 만들기 전에 호출하면 "window not viewable" 오류로 조용히 실패해
-        #  빈 다이얼로그만 뜨는 문제가 생김)
         dialog.update_idletasks()
         dialog.grab_set()
         if not is_open:
