@@ -1,5 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Catch Soriping Kiosk
-Exec=/usr/local/bin/start_kiosk.sh
-X-GNOME-Autostart-enabled=true

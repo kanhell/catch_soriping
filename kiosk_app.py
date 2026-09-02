@@ -208,11 +208,22 @@ class MainPage(tk.Frame):
             command=lambda: controller.show_frame("SettingsPage"),
         ).pack(side="right", padx=20)
 
+        banner_container = tk.Frame(self, bg="white")
+        banner_container.pack(fill="x")
+        self.banner_container = banner_container
+
         # 네트워크 미연결 안내 배너 (평소엔 숨김)
         self.network_banner = tk.Label(
-            self, text="⚠ 네트워크에 연결해주세요", bg="#fff3cd", fg="#92400e",
+            banner_container, text="⚠ 네트워크에 연결해주세요", bg="#fff3cd", fg="#92400e",
             font=(FONT_FAMILY, 13, "bold"), pady=10,
         )
+
+        # 녹음 준비 상태 안내 배너 (main.py의 STT 엔진 로딩이 끝날 때까지 표시)
+        self.loading_banner = tk.Label(
+            banner_container, text="⏳ 녹음 준비 중입니다...", bg="#e0edff", fg="#1e3a8a",
+            font=(FONT_FAMILY, 13, "bold"), pady=10,
+        )
+        self.loading_banner.pack(fill="x")  # 기본값: 준비 중으로 가정하고 표시
 
         # 스크롤 가능한 목록 영역
         list_container = tk.Frame(self, bg="white")
@@ -235,6 +246,7 @@ class MainPage(tk.Frame):
         self.empty_label.pack(pady=60)
 
         self._start_listener()
+        self._start_status_listener()
         self.after(300, self._poll_queue)
         self._check_wifi_loop()
 
@@ -252,6 +264,19 @@ class MainPage(tk.Frame):
         except Exception as e:
             logger.error(f"방송 목록 리스너 등록 실패: {e}")
 
+    def _start_status_listener(self):
+        def on_snapshot(doc_snapshot, changes, read_time):
+            data = {"state": "loading", "message": "녹음 준비 중입니다..."}
+            for doc in doc_snapshot:
+                if doc.exists:
+                    data = doc.to_dict()
+            self.queue.put(("loading_status", data))
+
+        try:
+            self.status_watch = db.collection("system_status").document("recorder").on_snapshot(on_snapshot)
+        except Exception as e:
+            logger.error(f"준비 상태 리스너 등록 실패: {e}")
+
     def _poll_queue(self):
         try:
             while True:
@@ -260,6 +285,8 @@ class MainPage(tk.Frame):
                     self._render(payload)
                 elif kind == "wifi_status":
                     self._update_network_banner(payload)
+                elif kind == "loading_status":
+                    self._update_loading_banner(payload)
         except queue.Empty:
             pass
         self.after(300, self._poll_queue)
@@ -429,7 +456,16 @@ class MainPage(tk.Frame):
         if connected:
             self.network_banner.pack_forget()
         else:
-            self.network_banner.pack(fill="x", after=self.winfo_children()[0])
+            self.network_banner.pack(in_=self.banner_container, fill="x")
+
+    def _update_loading_banner(self, data):
+        state = data.get("state", "loading")
+        if state == "ready":
+            self.loading_banner.pack_forget()
+        else:
+            msg = data.get("message", "녹음 준비 중입니다...")
+            self.loading_banner.config(text=f"⏳ {msg}")
+            self.loading_banner.pack(in_=self.banner_container, fill="x")
 
 
 # ============================================================

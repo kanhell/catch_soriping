@@ -6,6 +6,7 @@
 """
 
 import os
+from datetime import datetime, timezone
 
 import recorder
 import led_notify
@@ -21,6 +22,18 @@ STT_DEVICE = "cpu"
 # ======================================
 
 
+def _set_status(db_client, state, message):
+    """system_status/recorder 문서에 현재 상태를 기록 (kiosk_app.py가 실시간으로 구독)"""
+    try:
+        db_client.collection("system_status").document("recorder").set({
+            "state": state,
+            "message": message,
+            "updatedAt": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        logger.error(f"상태 업데이트 실패: {e}")
+
+
 def main():
     if not os.path.exists(FIREBASE_KEY_PATH):
         raise FileNotFoundError(
@@ -28,14 +41,16 @@ def main():
             "FIREBASE_KEY_PATH 값을 실제 키 파일 위치로 수정해주세요."
         )
 
+    logger.info("Firebase 연결 중...")
+    uploader = FirebaseUploader(FIREBASE_KEY_PATH)
+
+    _set_status(uploader.db, "loading", "STT 엔진 로딩 중입니다...")
     logger.info("STT 엔진 로딩 중... (모델 크기에 따라 시간이 걸릴 수 있습니다)")
     stt_engine = STTEngine(model_size=STT_MODEL_SIZE, device=STT_DEVICE)
     classifier = CategoryClassifier()
     title_generator = TitleGenerator()
 
-    logger.info("Firebase 연결 중...")
-    uploader = FirebaseUploader(FIREBASE_KEY_PATH)
-
+    _set_status(uploader.db, "ready", "녹음 대기 중")
     logger.info("준비 완료. 녹음 대기를 시작합니다.")
 
     def on_recording_saved(filepath: str):
